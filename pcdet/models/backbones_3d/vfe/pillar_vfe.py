@@ -39,6 +39,7 @@ class PFNLayer(nn.Module):
         x = self.norm(x.permute(0, 2, 1)).permute(0, 2, 1) if self.use_norm else x
         torch.backends.cudnn.enabled = True
         x = F.relu(x)
+        print(x)
         x_max = torch.max(x, dim=1, keepdim=True)[0]
 
         if self.last_vfe:

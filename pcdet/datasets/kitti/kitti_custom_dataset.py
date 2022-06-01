@@ -6,7 +6,7 @@ from skimage import io
 
 from . import kitti_utils
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
-from ...utils import box_utils, calibration_kitti, common_utils, object3d_kitti
+from ...utils import box_utils, calibration_kitti, common_utils, object3d_kitti_custom
 from ..dataset import DatasetTemplate
 
 
@@ -88,7 +88,7 @@ class KittiDataset(DatasetTemplate):
     def get_label(self, idx):
         label_file = self.root_split_path / 'label_2' / ('%s.txt' % idx)
         assert label_file.exists()
-        return object3d_kitti.get_objects_from_label(label_file)
+        return object3d_kitti_custom.get_objects_from_label(label_file)
 
     def get_depth_map(self, idx):
         """
@@ -159,6 +159,7 @@ class KittiDataset(DatasetTemplate):
             image_info = {'image_idx': sample_idx, 'image_shape': self.get_image_shape(sample_idx)}
             info['image'] = image_info
             calib = self.get_calib(sample_idx)
+            # print()
 
             P2 = np.concatenate([calib.P2, np.array([[0., 0., 0., 1.]])], axis=0)
             R0_4x4 = np.zeros([4, 4], dtype=calib.R0.dtype)
@@ -171,55 +172,76 @@ class KittiDataset(DatasetTemplate):
 
             if has_label:
                 obj_list = self.get_label(sample_idx)
-                annotations = {}
-                annotations['name'] = np.array([obj.cls_type for obj in obj_list])
-                annotations['truncated'] = np.array([obj.truncation for obj in obj_list])
-                annotations['occluded'] = np.array([obj.occlusion for obj in obj_list])
-                annotations['alpha'] = np.array([obj.alpha for obj in obj_list])
-                annotations['bbox'] = np.concatenate([obj.box2d.reshape(1, 4) for obj in obj_list], axis=0)
-                annotations['dimensions'] = np.array([[obj.l, obj.h, obj.w] for obj in obj_list])  # lhw(camera) format
-                annotations['location'] = np.concatenate([obj.loc.reshape(1, 3) for obj in obj_list], axis=0)
-                annotations['rotation_y'] = np.array([obj.ry for obj in obj_list])
-                annotations['score'] = np.array([obj.score for obj in obj_list])
-                annotations['difficulty'] = np.array([obj.level for obj in obj_list], np.int32)
 
-                num_objects = len([obj.cls_type for obj in obj_list if obj.cls_type != 'DontCare'])
-                num_gt = len(annotations['name'])
-                index = list(range(num_objects)) + [-1] * (num_gt - num_objects)
-                annotations['index'] = np.array(index, dtype=np.int32)
+                if len(obj_list) != 0:
 
-                loc = annotations['location'][:num_objects]
-                dims = annotations['dimensions'][:num_objects]
-                rots = annotations['rotation_y'][:num_objects]
-                loc_lidar = calib.rect_to_lidar(loc)
-                l, h, w = dims[:, 0:1], dims[:, 1:2], dims[:, 2:3]
-                loc_lidar[:, 2] += h[:, 0] / 2
-                gt_boxes_lidar = np.concatenate([loc_lidar, l, w, h, -(np.pi / 2 + rots[..., np.newaxis])], axis=1)
-                annotations['gt_boxes_lidar'] = gt_boxes_lidar
+                    annotations = {}
+                    annotations['name'] = np.array([obj.cls_type for obj in obj_list])
+                    annotations['truncated'] = np.array([obj.truncation for obj in obj_list])
+                    annotations['occluded'] = np.array([obj.occlusion for obj in obj_list])
+                    annotations['alpha'] = np.array([obj.alpha for obj in obj_list])
+                    annotations['bbox'] = np.empty((1,4), int)
+                    # for obj in obj_list:
+                    #     if len(obj.box2d) == 0:
+                    #         print(sample_idx)
+                    #         print(obj)
+                    #         obj.box2d == np.zeroes(4)
+                    #     annotations['bbox'] = np.concatenate((annotations['bbox'], obj.box2d.reshape(1, 4)), axis = 0)
+                    annotations['bbox'] = np.concatenate([obj.box2d.reshape(1, 4) for obj in obj_list], axis=0)
+                    annotations['dimensions'] = np.array([[obj.l, obj.h, obj.w] for obj in obj_list])  # lhw(camera) format
+                    annotations['location'] = np.concatenate([obj.loc.reshape(1, 3) for obj in obj_list], axis=0)
+                    annotations['rotation_y'] = np.array([obj.ry for obj in obj_list])
+                    annotations['score'] = np.array([obj.score for obj in obj_list])
+                    annotations['difficulty'] = np.array([obj.level for obj in obj_list], np.int32)
 
-                info['annos'] = annotations
+                    num_objects = len([obj.cls_type for obj in obj_list if obj.cls_type != 'DontCare'])
+                    num_gt = len(annotations['name'])
+                    index = list(range(num_objects)) + [-1] * (num_gt - num_objects)
+                    annotations['index'] = np.array(index, dtype=np.int32)
 
-                if count_inside_pts:
-                    points = self.get_lidar(sample_idx)
-                    calib = self.get_calib(sample_idx)
-                    pts_rect = calib.lidar_to_rect(points[:, 0:3])
+                    loc = annotations['location'][:num_objects]
+                    dims = annotations['dimensions'][:num_objects]
+                    rots = annotations['rotation_y'][:num_objects]
+                    loc_lidar = calib.rect_to_lidar(loc)
+                    l, h, w = dims[:, 0:1], dims[:, 1:2], dims[:, 2:3]
+                    loc_lidar[:, 2] += h[:, 0] / 2
+                    gt_boxes_lidar = np.concatenate([loc_lidar, l, w, h, -(np.pi / 2 + rots[..., np.newaxis])], axis=1)
+                    annotations['gt_boxes_lidar'] = gt_boxes_lidar
 
-                    fov_flag = self.get_fov_flag(pts_rect, info['image']['image_shape'], calib)
-                    pts_fov = points[fov_flag]
-                    corners_lidar = box_utils.boxes_to_corners_3d(gt_boxes_lidar)
-                    num_points_in_gt = -np.ones(num_gt, dtype=np.int32)
+                    info['annos'] = annotations
 
-                    for k in range(num_objects):
-                        flag = box_utils.in_hull(pts_fov[:, 0:3], corners_lidar[k])
-                        num_points_in_gt[k] = flag.sum()
-                    annotations['num_points_in_gt'] = num_points_in_gt
+                    if count_inside_pts:
+                        points = self.get_lidar(sample_idx)
+                        calib = self.get_calib(sample_idx)
+                        pts_rect = calib.lidar_to_rect(points[:, 0:3])
 
+                        fov_flag = self.get_fov_flag(pts_rect, info['image']['image_shape'], calib)
+                        pts_fov = points[fov_flag]
+                        corners_lidar = box_utils.boxes_to_corners_3d(gt_boxes_lidar)
+                        num_points_in_gt = -np.ones(num_gt, dtype=np.int32)
+
+                        for k in range(num_objects):
+                            flag = box_utils.in_hull(pts_fov[:, 0:3], corners_lidar[k])
+                            num_points_in_gt[k] = flag.sum()
+                        annotations['num_points_in_gt'] = num_points_in_gt
+
+                else:
+                    info = "empty"
             return info
 
         sample_id_list = sample_id_list if sample_id_list is not None else self.sample_id_list
-        with futures.ThreadPoolExecutor(num_workers) as executor:
-            infos = executor.map(process_single_scene, sample_id_list)
-        return list(infos)
+        # with futures.ThreadPoolExecutor(num_workers) as executor:
+        #     infos = executor.map(process_single_scene, sample_id_list)
+        # print(list(infos))
+        info_list = list()
+        file_list = list()
+        for sample_id in sample_id_list:
+            infos =  process_single_scene(sample_id)
+            if infos != "empty":
+                info_list.append(infos)
+                file_list.append(sample_id)
+        return info_list, file_list
+        # return list(infos)
 
     def create_groundtruth_database(self, info_path=None, used_classes=None, split='train'):
         import torch
@@ -427,10 +449,11 @@ class KittiDataset(DatasetTemplate):
         return data_dict
 
 
-def create_kitti_infos(dataset_cfg, class_names, data_path, save_path, workers=4):
+def create_kitti_infos(dataset_cfg, class_names, data_path, save_path, imageset_path, workers=4):
     print(dataset_cfg)
     print(class_names)
     print(data_path)
+    trainval_imageset = list()
     dataset = KittiDataset(dataset_cfg=dataset_cfg, class_names=class_names, root_path=data_path, training=False)
     train_split, val_split = 'train', 'val'
 
@@ -441,27 +464,58 @@ def create_kitti_infos(dataset_cfg, class_names, data_path, save_path, workers=4
 
     print('---------------Start to generate data infos---------------')
 
+    # TRAIN__________________________________
     dataset.set_split(train_split)
-    kitti_infos_train = dataset.get_infos(num_workers=workers, has_label=True, count_inside_pts=True)
+    kitti_infos_train, train_imageset = dataset.get_infos(num_workers=workers, has_label=True, count_inside_pts=True)
+    print("finished train")
     with open(train_filename, 'wb') as f:
         pickle.dump(kitti_infos_train, f)
     print('Kitti info train file is saved to %s' % train_filename)
 
+    with open(imageset_path / 'train.txt', 'w') as f:
+        for id in train_imageset:
+            f.write(id + '\n')
+        f.close()
+    print("Updated train ImageSet")
+
+    #VAL__________________________________
     dataset.set_split(val_split)
-    kitti_infos_val = dataset.get_infos(num_workers=workers, has_label=True, count_inside_pts=True)
+    kitti_infos_val, val_imageset = dataset.get_infos(num_workers=workers, has_label=True, count_inside_pts=True)
     with open(val_filename, 'wb') as f:
         pickle.dump(kitti_infos_val, f)
     print('Kitti info val file is saved to %s' % val_filename)
 
+    with open(imageset_path / 'val.txt', 'w') as f:
+        for id in val_imageset:
+            f.write(id + '\n')
+        f.close()
+    print("Updated val ImageSet")
+
+    #TRAINVAL__________________________________
     with open(trainval_filename, 'wb') as f:
         pickle.dump(kitti_infos_train + kitti_infos_val, f)
     print('Kitti info trainval file is saved to %s' % trainval_filename)
 
+    trainval_imageset = train_imageset + val_imageset
+
+    with open(imageset_path / 'trainval.txt', 'w') as f:
+        for id in trainval_imageset:
+            f.write(id + '\n')
+        f.close()
+    print("Updated trainval ImageSet")
+
+    #TEST__________________________________
     dataset.set_split('test')
-    kitti_infos_test = dataset.get_infos(num_workers=workers, has_label=False, count_inside_pts=False)
+    kitti_infos_test, test_imageset = dataset.get_infos(num_workers=workers, has_label=False, count_inside_pts=False)
     with open(test_filename, 'wb') as f:
         pickle.dump(kitti_infos_test, f)
     print('Kitti info test file is saved to %s' % test_filename)
+
+    with open(imageset_path / 'test.txt', 'w') as f:
+        for id in test_imageset:
+            f.write(id + '\n')
+        f.close()
+    print("Updated test ImageSet")
 
     print('---------------Start create groundtruth database for data augmentation---------------')
     dataset.set_split(train_split)
@@ -480,7 +534,8 @@ if __name__ == '__main__':
         ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()
         create_kitti_infos(
             dataset_cfg=dataset_cfg,
-            class_names=['Car', 'Pedestrian', 'Cyclist'],
-            data_path=ROOT_DIR / 'data' / 'kitti',
-            save_path=ROOT_DIR / 'data' / 'kitti'
+            class_names=['car', 'human'],
+            data_path=ROOT_DIR / 'data' / 'kitti_custom',
+            save_path=ROOT_DIR / 'data' / 'kitti_custom',
+            imageset_path=ROOT_DIR / 'data' / 'kitti_custom' / 'ImageSets'
         )
